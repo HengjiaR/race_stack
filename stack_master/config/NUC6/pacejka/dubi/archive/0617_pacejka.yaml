@@ -8,3 +8,9 @@ Ef: 0.445
 Er: 1.1
 floor: dubi
 friction_coeff: 1.0
+
+# longitudinal: NOT IDENTIFIED, placeholders
+Bx: 10.0
+Cx: 1.6
+Dx: 1.0
+Ex: 0.0

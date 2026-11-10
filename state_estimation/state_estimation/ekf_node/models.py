@@ -372,9 +372,9 @@ class single_track_full_model:
 
         # Initial Values
         self.x_0 = np.zeros(self.dim_x)
-        self.x_0[self.IDX['s_w']] = 1.0
+        self.x_0[self.IDX['s_w']] = 0.94
         self.P_0 = np.eye(self.dim_x) * 10
-        self.P_0[6, 6] = 1e-3            # s_w
+        self.P_0[6, 6] = 0           # s_w 1e-3 but now set to 0 for testing
         self.P_0[7:10, 7:10] *= 1e-4     # IMU biases (calibrate at standstill)
         self.P_0[10:13, 10:13] *= 1e-2   # disturbances
 
@@ -388,7 +388,7 @@ class single_track_full_model:
         h = dt / n_sub
         x_next = x_sym
         for _ in range(n_sub):
-            xdot, _, _, _ = self._dynamics(x_next, u_sym)
+            xdot = self._dynamics(x_next, u_sym)[0]  # only xdot needed here
             x_next = x_next + h * xdot
 
         self.f = ca.Function('f', [x_sym, u_sym, dt], [x_next])
@@ -401,8 +401,17 @@ class single_track_full_model:
         vx, vy, omega = x_sym[3], x_sym[4], x_sym[5]
         b_gz, b_ax, b_ay = x_sym[7], x_sym[8], x_sym[9]
 
-        _, ax, ay, omega_dot = self._dynamics(x_sym, u_sym)
-
+        _, ax, ay, omega_dot = self._dynamics(x_sym, u_sym)[:4]  # extra outputs not needed here
+        _, _, _, _, F_X, F_Y, M_Z, w, kappa = self._dynamics(x_sym, u_sym)
+        self.diag_names = ['F_X', 'F_Y', 'M_Z', 'w', 'kappa']
+        extra_output = ca.vertcat(
+                    F_X, 
+                    F_Y, 
+                    M_Z, 
+                    w, 
+                    kappa
+        )
+        self.diag = ca.Function('diag', [x_sym, u_sym], [extra_output])
         # IMU data arrives already in base_link: specific force at base_link (lever arm from CoG)
         px, py = self.p.get('base_px', 0.0), self.p.get('base_py', 0.0)
         h_imu_sym = ca.vertcat(
@@ -444,7 +453,12 @@ class single_track_full_model:
         """
         Continuous-time dynamics, blended dynamic/kinematic.
         Returns (xdot [dim_x], ax, ay, omega_dot) where ax, ay are body-frame
-        specific forces at the CoG, used by the IMU measurement model.
+        specific forces at the CoG, used by the IMU measurement model,
+        followed by diagnostics for analysis (stage 2):
+            F_X, F_Y : total model tire force in body x / y [N] (without d_x, d_y)
+            M_Z      : total model yaw moment [Nm] (without d_psi)
+            w        : dynamic/kinematic blend weight (0 = kinematic, 1 = dynamic)
+            kappa    : shared slip ratio [-]
         """
         p = self.p
         g = 9.81
@@ -541,7 +555,7 @@ class single_track_full_model:
 
         # Slow states (s_w, biases, disturbances) are random walks: zero drift, driven by Q
         xdot = ca.vertcat(f_mixed, ca.SX.zeros(self.dim_x - 6))
-        return xdot, ax, ay, omega_dot
+        return xdot, ax, ay, omega_dot, F_X, F_Y, M_Z, w, kappa
 
     def predict(self, ekf, dt, u):
         x_flat = np.array(ekf.x).flatten()

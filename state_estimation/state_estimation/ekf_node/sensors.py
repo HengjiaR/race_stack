@@ -74,6 +74,13 @@ class Sensor:
         self._origin = None
         self._seeded = False
 
+        # Innovation of the most recent update, saved for analysis (stage 2).
+        # last_innovation     = measured - predicted (filterpy's ekf.y), one value per used row
+        # last_innovation_std = expected spread of it, sqrt(diag(S)) with S = H P H^T + R
+        # Both stay None until the first update of this sensor.
+        self.last_innovation = None
+        self.last_innovation_std = None
+
         # Innovation gating
         self.gate_groups = [list(g) for g in gate_groups] if gate_groups else None
         self.gate_thresholds = ([chi2.ppf(gate_prob, df=len(g)) for g in self.gate_groups]
@@ -187,6 +194,12 @@ class Sensor:
         else:
             ekf.update(z=z_used, HJacobian=HJacobian, Hx=Hx, R=R,
                        residual=residual)
+
+        # Save the innovation now: filterpy keeps it in ekf.y / ekf.S only until the next
+        # sensor's update overwrites it. Computed from the state BEFORE this correction,
+        # so it is the filter's real "surprise" at this measurement.
+        self.last_innovation = np.array(ekf.y, dtype=float).flatten()
+        self.last_innovation_std = np.sqrt(np.clip(np.diag(np.atleast_2d(ekf.S)), 0, None))
 
         duration_ms = (time.perf_counter_ns() - t0) / 1_000_000.0
         if duration_ms > self.update_max_ms:

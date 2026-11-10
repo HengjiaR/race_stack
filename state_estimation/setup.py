@@ -26,6 +26,10 @@ setup(
         'console_scripts': [
             'carstate_node = state_estimation.carstate_node:main',
             'basalt_to_ekf_node = state_estimation.basalt_to_ekf_node:main',
-            'ekf_node = state_estimation.ekf_node.ekf_node:main'        ],
+            'ekf_node = state_estimation.ekf_node.ekf_node:main',
+            # Bag-replay workaround: rebuilds /drive (steering) from /vesc/odom
+            # for bags recorded without /drive. See drive_from_vesc_odom.py.
+            'drive_from_vesc_odom = state_estimation.drive_from_vesc_odom:main',
+        ],
     },
 )

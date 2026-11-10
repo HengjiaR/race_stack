@@ -18,7 +18,7 @@ from tf2_ros import TransformBroadcaster
 
 from . import models
 from .sensors import ImuSensor, OdomSensor, VescSpeedInput
-
+from sensor_msgs.msg import JointState 
 
 class EkfNode(Node):
     """
@@ -226,6 +226,20 @@ class EkfNode(Node):
 
         # Publisher
         self.odom_pub = self.create_publisher(Odometry, self.ODOM_TOPIC, 1)
+        # Full EKF state for offline analysis (stage 2)
+        self.state_pub = self.create_publisher(JointState, self.ODOM_TOPIC + '_state', 10)
+        idx = getattr(self.model, 'IDX', None)
+        self.state_names = (sorted(idx, key=idx.get) if idx
+                            else [f'x{i}' for i in range(len(np.array(self.ekf.x).flatten()))])
+        # Model forces / diagnostics for analysis (stage 2), only the full model has them
+        if self.is_wheel_model:
+            self.forces_pub = self.create_publisher(JointState, self.ODOM_TOPIC + '_forces', 10)
+        # IMU innovations for analysis (stage 2): measured - predicted of the IMU update,
+        # e.g. /ekf_full/odom -> /ekf_full/odom_innov. Rows follow the IMU measurement model.
+        self.imu_for_innov = next((s for s in self.sensors if s.name == 'imu'), None)
+        self.innov_names = ['yaw', 'yaw_rate', 'ax', 'ay']
+        self.innov_last_count = 0      # update_count of the IMU at the last publish
+        self.innov_pub = self.create_publisher(JointState, self.ODOM_TOPIC + '_innov', 10)
 
         # Evaulating computational expences
         self.predict_count = 0
@@ -286,7 +300,7 @@ class EkfNode(Node):
             self.last_cmd_time = now
 
             self.ackermann_data[0] = calculated_accel
-            self.ackermann_data[1] = -msg.drive.steering_angle
+            self.ackermann_data[1] = msg.drive.steering_angle  #flipped the sign to test
 
     # Helper functions
     def shutdown(self):
@@ -308,7 +322,7 @@ class EkfNode(Node):
                 print(f"Gated rejections: {sensor.reject_count}, forced accepts: {sensor.force_accept_count}")
         self.get_logger().info("Shutting down...")
 
-    def publish_odometry(self):
+    def publish_odometry(self, u=None):
         state = self.model.get_odom_state(self.ekf.x)
 
         odom = Odometry()
@@ -363,6 +377,38 @@ class EkfNode(Node):
 
 
         self.odom_pub.publish(odom)
+        
+        state_msg = JointState()
+        state_msg.header.stamp = odom.header.stamp      # same stamp as the odometry
+        state_msg.name = self.state_names
+        state_msg.position = np.array(self.ekf.x, dtype=float).flatten().tolist()
+        state_msg.velocity = np.sqrt(np.clip(np.diag(self.ekf.P), 0, None)).tolist()   # 1-sigma per state
+        self.state_pub.publish(state_msg)
+
+        # Model forces at the published state, with the inputs of this step (stage 2)
+        if self.is_wheel_model and u is not None:
+            x_flat = np.array(self.ekf.x, dtype=float).flatten()
+            values = np.array(self.model.diag(x_flat, u), dtype=float).flatten()
+
+            forces_msg = JointState()
+            forces_msg.header.stamp = odom.header.stamp       # same stamp as odom and state
+            forces_msg.name = self.model.diag_names            # ['F_X', 'F_Y', 'M_Z', 'w', 'kappa']
+            forces_msg.position = values.tolist()
+            self.forces_pub.publish(forces_msg)
+
+        # IMU innovation (stage 2): published only when the IMU actually updated since the
+        # last publish, so every message is one real update (no repeated stale values).
+        imu = self.imu_for_innov
+        if (imu is not None and imu.last_innovation is not None
+                and imu.update_count != self.innov_last_count):
+            self.innov_last_count = imu.update_count
+            innov_msg = JointState()
+            innov_msg.header.stamp = odom.header.stamp           # same stamp as odom/state/forces
+            n = len(imu.last_innovation)                          # 4, or fewer if gating dropped rows
+            innov_msg.name = self.innov_names[:n] if n == len(self.innov_names) else [f'row{i}' for i in range(n)]
+            innov_msg.position = imu.last_innovation.tolist()     # measured - predicted
+            innov_msg.velocity = imu.last_innovation_std.tolist() # expected 1-sigma of it
+            self.innov_pub.publish(innov_msg)
 
     def timer_callback(self):
         """
@@ -427,7 +473,7 @@ class EkfNode(Node):
         self.tot_update_count += 1
         self.tot_update_mean_ms += (duration_ms - self.tot_update_mean_ms) / self.tot_update_count
 
-        self.publish_odometry()
+        self.publish_odometry(u)
 
 
 def main(args=None):

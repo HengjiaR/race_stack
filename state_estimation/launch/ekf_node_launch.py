@@ -22,16 +22,16 @@ DEFAULT_COV = {
 # Starting values only: shrink Q on d_* as the tire fit improves. Keep Q on
 # vx, vy, omega small: process noise should enter through d_*, not the velocities.
 WHEEL_MODEL_COV = {
-    'R_imu': [0.1, 0.001, 1.0, 1.0],                    # yaw, gyro, ax, ay (accel no longer disabled)
+    'R_imu': [1000000.0, 0.001, 1.0, 1.0],                    # yaw, gyro, ax, ay (accel no longer disabled) yaw to 1000000.0 for testing
     'R_vesc': [1, 1, 1, 1, 100, 0.1],                   # unused: VESC speed is an input
     'R_vio': [0.1, 0.1, 0.1, 0.01, 0.01, 1000000.0],    # x, y, yaw, vx, vy, yaw rate
     'Q': [0.001, 0.001, 0.001, 1e-4, 1e-4, 1e-3,
-          1e-7, 1e-8, 1e-6, 1e-6,
-          0.5, 0.5, 0.01],
+          0, 1e-8, 1e-6, 1e-6,
+          0.5, 0.5, 0.01], #setting sw from 1e-7 to 0 for testing
 }
 
 WHEEL_MODEL_PARAMS = {
-    'gate_prob': 0.99,
+    'gate_prob': 0.0, #0.99 but set to 0 for stage 2
     'gate_max_reject': 50,
     'imu_acc_ema_alpha': 1.0,        # raw accel to the measurement; ax_lt carries the low-passed signal
     'tau_lt': 0.03,
@@ -57,6 +57,9 @@ def launch_setup(context, *args, **kwargs):
         'vesc_topic': LaunchConfiguration('odom_vesc_topic'),
         'vio_topic': '/basalt/odom',
         'floor': LaunchConfiguration('floor'),
+        # Bag replay: use the bag's /clock (needs `ros2 bag play ... --clock`) instead
+        # of the laptop clock, so dt and message stamps match from the first step.
+        'use_sim_time': LaunchConfiguration('use_sim_time').perform(context).lower() == 'true',
         **cov,
     }
     if is_wheel:
@@ -90,6 +93,8 @@ def generate_launch_description():
         DeclareLaunchArgument('model_type', default_value='point_mass_model'),
         DeclareLaunchArgument('racecar_version', default_value='none'),
         DeclareLaunchArgument('floor', default_value='dubi'),
+        # true when replaying a bag with --clock, false on the car
+        DeclareLaunchArgument('use_sim_time', default_value='false'),
 
         DeclareLaunchArgument('odom_vesc_topic', default_value='/odom'),
         DeclareLaunchArgument('imu_topic', default_value='/imu'),
